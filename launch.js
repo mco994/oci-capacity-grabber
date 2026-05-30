@@ -1,14 +1,7 @@
-// Self-contained OCI ARM capacity grabber.
-// Signs OCI REST calls with the API key (no SDK), checks if our instance already
-// exists, and if not, attempts to LaunchInstance (4 OCPU / 24 GB A1.Flex).
-// Exit codes:
-//   0  -> nothing to notify (still out of capacity, or instance already exists)
-//   1  -> NOTIFY: instance was just created (or a real/unexpected error)
 const fs = require('fs');
 const https = require('https');
 const crypto = require('crypto');
 
-// ---- Non-secret config (safe to commit in a private repo) ----
 const CFG = {
   region:       'eu-marseille-1',
   tenancy:      'ocid1.tenancy.oc1..aaaaaaaaudgb2rry4yqmybhlqzpzn7wqsb7auxyidjl2x3zubumkydf3widq',
@@ -25,9 +18,13 @@ const CFG = {
   sshPublicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE72Q+wrL9iEinFF0MBH7HzFTDwtXpQDBqLvXGGmABLr pc1-marin-oracle',
 };
 
+const MAX_RUN_MINUTES = Number(process.env.MAX_RUN_MINUTES || 50);
+const RETRY_INTERVAL_MS = Number(process.env.RETRY_INTERVAL_MS || 60_000);
+
 const KEY = fs.readFileSync(process.env.OCI_KEY_FILE || './oci_api_key.pem', 'utf8');
 const keyId = `${CFG.tenancy}/${CFG.user}/${CFG.fingerprint}`;
 const IAAS = `iaas.${CFG.region}.oraclecloud.com`;
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 function ociRequest(method, host, pathWithQuery, bodyObj) {
   return new Promise((resolve, reject) => {
@@ -61,22 +58,20 @@ function ociRequest(method, host, pathWithQuery, bodyObj) {
   });
 }
 
-(async () => {
-  // 1) Already have a live instance? Then go quiet.
+async function attempt() {
   const list = await ociRequest('GET', IAAS,
     `/20160918/instances?compartmentId=${CFG.tenancy}&displayName=${encodeURIComponent(CFG.displayName)}`);
   if (list.status === 200) {
     const live = JSON.parse(list.body).filter(i => !['TERMINATED', 'TERMINATING'].includes(i.lifecycleState));
     if (live.length > 0) {
       console.log(`Instance "${CFG.displayName}" already exists (${live[0].lifecycleState}). Nothing to do.`);
-      process.exit(0);
+      return 'exists';
     }
   } else {
     console.error(`List instances failed: HTTP ${list.status}: ${list.body}`);
-    process.exit(1); // real problem worth surfacing
+    return 'error';
   }
 
-  // 2) Attempt to create it.
   const payload = {
     compartmentId: CFG.tenancy,
     availabilityDomain: CFG.availabilityDomain,
@@ -96,16 +91,38 @@ function ociRequest(method, host, pathWithQuery, bodyObj) {
     console.log('  OCID: ' + inst.id);
     console.log('  Check the OCI console for the public IP. Then DISABLE this workflow.');
     console.log('============================================================');
-    process.exit(1); // intentional: triggers a GitHub "run failed" notification email
+    return 'created';
   }
 
-  // Out of capacity / throttling -> expected, stay quiet so we don't spam notifications.
   if (/capacity/i.test(res.body) || res.status === 429) {
-    console.log(`Still no capacity (HTTP ${res.status}). Will retry next run.`);
-    process.exit(0);
+    console.log(`Still no capacity (HTTP ${res.status}).`);
+    return 'nocap';
   }
 
-  // Anything else is unexpected -> surface it.
   console.error(`Unexpected launch response: HTTP ${res.status}: ${res.body}`);
-  process.exit(1);
-})().catch(e => { console.error('ERROR:', e.message); process.exit(1); });
+  return 'error';
+}
+
+(async () => {
+  const deadline = Date.now() + MAX_RUN_MINUTES * 60_000;
+  let n = 0;
+  while (true) {
+    n++;
+    let outcome;
+    try {
+      outcome = await attempt();
+    } catch (e) {
+      console.error(`Attempt ${n} threw: ${e.message}`);
+      outcome = 'nocap';
+    }
+
+    if (outcome === 'created' || outcome === 'error') process.exit(1);
+    if (outcome === 'exists') process.exit(0);
+
+    if (Date.now() + RETRY_INTERVAL_MS >= deadline) {
+      console.log(`Time budget exhausted after ${n} attempt(s); still no capacity. Next cron will retry.`);
+      process.exit(0);
+    }
+    await sleep(RETRY_INTERVAL_MS);
+  }
+})();

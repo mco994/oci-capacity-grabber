@@ -2,7 +2,7 @@ name: grab-arm-capacity
 
 on:
   schedule:
-    - cron: '*/15 * * * *'   # every 15 min; GitHub may delay under load
+    - cron: '*/5 * * * *'    # every 5 min (public repo = unlimited minutes); GitHub may delay under load
   workflow_dispatch: {}        # manual "Run workflow" button
 
 # Avoid overlapping runs piling up.

@@ -1,0 +1,4 @@
+oci_api_key.pem
+*.pem
+.oci/
+node_modules/

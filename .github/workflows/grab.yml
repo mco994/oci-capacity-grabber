@@ -1,0 +1,27 @@
+name: grab-arm-capacity
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # every 15 min; GitHub may delay under load
+  workflow_dispatch: {}        # manual "Run workflow" button
+
+# Avoid overlapping runs piling up.
+concurrency:
+  group: grab
+  cancel-in-progress: false
+
+jobs:
+  grab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Write OCI private key from secret
+        env:
+          KEY: ${{ secrets.OCI_API_PRIVATE_KEY }}
+        run: printf '%s' "$KEY" > oci_api_key.pem
+      - name: Attempt to grab capacity
+        run: node launch.js

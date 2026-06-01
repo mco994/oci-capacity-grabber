@@ -94,7 +94,12 @@ async function attempt() {
     return 'created';
   }
 
-  if (/capacity/i.test(res.body) || res.status === 429) {
+  if (res.status === 429) {
+    console.log(`Rate-limited (HTTP 429). Backing off.`);
+    return 'ratelimit';
+  }
+
+  if (/capacity/i.test(res.body)) {
     console.log(`Still no capacity (HTTP ${res.status}).`);
     return 'nocap';
   }
@@ -119,10 +124,11 @@ async function attempt() {
     if (outcome === 'created' || outcome === 'error') process.exit(1);
     if (outcome === 'exists') process.exit(0);
 
-    if (Date.now() + RETRY_INTERVAL_MS >= deadline) {
+    const wait = outcome === 'ratelimit' ? RETRY_INTERVAL_MS * 3 : RETRY_INTERVAL_MS;
+    if (Date.now() + wait >= deadline) {
       console.log(`Time budget exhausted after ${n} attempt(s); still no capacity. Next cron will retry.`);
       process.exit(0);
     }
-    await sleep(RETRY_INTERVAL_MS);
+    await sleep(wait);
   }
 })();

@@ -19,7 +19,7 @@ const CFG = {
 };
 
 const MAX_RUN_MINUTES = Number(process.env.MAX_RUN_MINUTES || 50);
-const RETRY_INTERVAL_MS = Number(process.env.RETRY_INTERVAL_MS || 60_000);
+const RETRY_INTERVAL_MS = Number(process.env.RETRY_INTERVAL_MS || 30_000);
 
 const KEY = fs.readFileSync(process.env.OCI_KEY_FILE || './oci_api_key.pem', 'utf8');
 const keyId = `${CFG.tenancy}/${CFG.user}/${CFG.fingerprint}`;

@@ -9,22 +9,15 @@ const CFG = {
   fingerprint:  '5d:64:e2:62:73:ad:4c:48:01:97:00:fa:d1:13:16:76',
   availabilityDomain: 'QqsV:EU-MARSEILLE-1-AD-1',
   subnetId:     'ocid1.subnet.oc1.eu-marseille-1.aaaaaaaaxi2kvzkpacr2534cr7jqazameuies2dojhhhugeuntwizqig7aya',
-  imageId:      'ocid1.image.oc1.eu-marseille-1.aaaaaaaafma24hdplplovw2mtxxpge5q5gwxilt5go3nbjefvsn4dd2scq7q',
-  shape:        'VM.Standard.A1.Flex',
-  ocpus:        4,
-  memoryInGBs:  24,
-  bootVolumeSizeInGBs: 200,
-  displayName:  'claude-dev',
+  shape:        'VM.Standard.E2.1.Micro',
+  bootVolumeSizeInGBs: 50,
+  displayName:  'claude-grabber',
   sshPublicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE72Q+wrL9iEinFF0MBH7HzFTDwtXpQDBqLvXGGmABLr pc1-marin-oracle',
 };
 
-const MAX_RUN_MINUTES = Number(process.env.MAX_RUN_MINUTES || 340);
-const RETRY_INTERVAL_MS = Number(process.env.RETRY_INTERVAL_MS || 30_000);
-
-const KEY = fs.readFileSync(process.env.OCI_KEY_FILE || './oci_api_key.pem', 'utf8');
+const KEY = fs.readFileSync(process.env.OCI_KEY_FILE || 'C:\\Users\\marin\\.oci\\oci_api_key.pem', 'utf8');
 const keyId = `${CFG.tenancy}/${CFG.user}/${CFG.fingerprint}`;
 const IAAS = `iaas.${CFG.region}.oraclecloud.com`;
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 function ociRequest(method, host, pathWithQuery, bodyObj) {
   return new Promise((resolve, reject) => {
@@ -58,27 +51,38 @@ function ociRequest(method, host, pathWithQuery, bodyObj) {
   });
 }
 
-async function attempt() {
+async function latestX86Image() {
+  const path = `/20160918/images?compartmentId=${CFG.tenancy}` +
+    `&operatingSystem=${encodeURIComponent('Canonical Ubuntu')}` +
+    `&operatingSystemVersion=24.04&shape=${encodeURIComponent(CFG.shape)}` +
+    `&lifecycleState=AVAILABLE&sortBy=TIMECREATED&sortOrder=DESC&limit=5`;
+  const res = await ociRequest('GET', IAAS, path);
+  if (res.status !== 200) throw new Error(`List images failed: HTTP ${res.status}: ${res.body}`);
+  const imgs = JSON.parse(res.body);
+  if (!imgs.length) throw new Error('No x86 Ubuntu 24.04 image found for E2.1.Micro');
+  return imgs[0];
+}
+
+(async () => {
   const list = await ociRequest('GET', IAAS,
     `/20160918/instances?compartmentId=${CFG.tenancy}&displayName=${encodeURIComponent(CFG.displayName)}`);
   if (list.status === 200) {
     const live = JSON.parse(list.body).filter(i => !['TERMINATED', 'TERMINATING'].includes(i.lifecycleState));
     if (live.length > 0) {
-      console.log(`Instance "${CFG.displayName}" already exists (${live[0].lifecycleState}). Nothing to do.`);
-      return 'exists';
+      console.log(`Instance "${CFG.displayName}" already exists (${live[0].lifecycleState}). OCID: ${live[0].id}`);
+      process.exit(0);
     }
-  } else {
-    console.error(`List instances failed: HTTP ${list.status}: ${list.body}`);
-    return 'error';
   }
+
+  const img = await latestX86Image();
+  console.log(`Using image: ${img.displayName}\n  ${img.id}`);
 
   const payload = {
     compartmentId: CFG.tenancy,
     availabilityDomain: CFG.availabilityDomain,
     displayName: CFG.displayName,
     shape: CFG.shape,
-    shapeConfig: { ocpus: CFG.ocpus, memoryInGBs: CFG.memoryInGBs },
-    sourceDetails: { sourceType: 'image', imageId: CFG.imageId, bootVolumeSizeInGBs: CFG.bootVolumeSizeInGBs },
+    sourceDetails: { sourceType: 'image', imageId: img.id, bootVolumeSizeInGBs: CFG.bootVolumeSizeInGBs },
     createVnicDetails: { subnetId: CFG.subnetId, assignPublicIp: true },
     metadata: { ssh_authorized_keys: CFG.sshPublicKey },
   };
@@ -87,48 +91,17 @@ async function attempt() {
   if (res.status >= 200 && res.status < 300) {
     const inst = JSON.parse(res.body);
     console.log('============================================================');
-    console.log('  SUCCESS — INSTANCE CREATED! 🎉');
+    console.log('  SUCCESS — E2.1.Micro CREATED!');
     console.log('  OCID: ' + inst.id);
-    console.log('  Check the OCI console for the public IP. Then DISABLE this workflow.');
+    console.log('  IP publique: voir la console OCI dans ~1 min.');
     console.log('============================================================');
-    return 'created';
-  }
-
-  if (res.status === 429) {
-    console.log(`Rate-limited (HTTP 429). Backing off.`);
-    return 'ratelimit';
+    process.exit(0);
   }
 
   if (/capacity/i.test(res.body)) {
-    console.log(`Still no capacity (HTTP ${res.status}).`);
-    return 'nocap';
+    console.log(`Out of capacity for E2.1.Micro (HTTP ${res.status}). Réessayer plus tard.`);
+    process.exit(2);
   }
-
-  console.error(`Unexpected launch response: HTTP ${res.status}: ${res.body}`);
-  return 'error';
-}
-
-(async () => {
-  const deadline = Date.now() + MAX_RUN_MINUTES * 60_000;
-  let n = 0;
-  while (true) {
-    n++;
-    let outcome;
-    try {
-      outcome = await attempt();
-    } catch (e) {
-      console.error(`Attempt ${n} threw: ${e.message}`);
-      outcome = 'nocap';
-    }
-
-    if (outcome === 'created' || outcome === 'error') process.exit(1);
-    if (outcome === 'exists') process.exit(0);
-
-    const wait = outcome === 'ratelimit' ? RETRY_INTERVAL_MS * 3 : RETRY_INTERVAL_MS;
-    if (Date.now() + wait >= deadline) {
-      console.log(`Time budget exhausted after ${n} attempt(s); still no capacity. Next cron will retry.`);
-      process.exit(0);
-    }
-    await sleep(wait);
-  }
-})();
+  console.error(`Launch failed: HTTP ${res.status}: ${res.body}`);
+  process.exit(1);
+})().catch(e => { console.error('ERROR:', e.message); process.exit(1); });

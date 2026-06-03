@@ -13,7 +13,7 @@ const CFG = {
   shape:        'VM.Standard.A1.Flex',
   ocpus:        4,
   memoryInGBs:  24,
-  bootVolumeSizeInGBs: 200,
+  bootVolumeSizeInGBs: 150,
   displayName:  'claude-dev',
   sshPublicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE72Q+wrL9iEinFF0MBH7HzFTDwtXpQDBqLvXGGmABLr pc1-marin-oracle',
 };

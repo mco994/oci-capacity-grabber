@@ -1,0 +1,18 @@
+[Unit]
+Description=OCI A1 capacity grabber (continuous)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/grabber
+Environment=MAX_RUN_MINUTES=525600
+Environment=RETRY_INTERVAL_MS=30000
+Environment=OCI_KEY_FILE=/home/ubuntu/grabber/oci_api_key.pem
+ExecStart=/usr/bin/node /home/ubuntu/grabber/launch.js
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

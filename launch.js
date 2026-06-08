@@ -20,6 +20,7 @@ const CFG = {
 
 const MAX_RUN_MINUTES = Number(process.env.MAX_RUN_MINUTES || 340);
 const RETRY_INTERVAL_MS = Number(process.env.RETRY_INTERVAL_MS || 30_000);
+const WON_FILE = process.env.WON_FILE || '/home/ubuntu/grabber/.won';
 
 const KEY = fs.readFileSync(process.env.OCI_KEY_FILE || './oci_api_key.pem', 'utf8');
 const keyId = `${CFG.tenancy}/${CFG.user}/${CFG.fingerprint}`;
@@ -121,8 +122,9 @@ async function attempt() {
       outcome = 'nocap';
     }
 
-    if (outcome === 'created' || outcome === 'error') process.exit(1);
-    if (outcome === 'exists') process.exit(0);
+    if (outcome === 'created') { try { fs.writeFileSync(WON_FILE, new Date().toISOString()); } catch (e) {} process.exit(1); }
+    if (outcome === 'error') process.exit(1);
+    if (outcome === 'exists') { try { fs.writeFileSync(WON_FILE, new Date().toISOString()); } catch (e) {} process.exit(0); }
 
     const wait = outcome === 'ratelimit' ? RETRY_INTERVAL_MS * 3 : RETRY_INTERVAL_MS;
     if (Date.now() + wait >= deadline) {

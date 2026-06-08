@@ -1,0 +1,7 @@
+[Unit]
+Description=Watchdog: relance oci-grabber si tombe (sauf A1 obtenue)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/oci-grabber-watchdog.sh

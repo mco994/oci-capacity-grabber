@@ -63,6 +63,8 @@ function ociRequest(method, host, pathWithQuery, bodyObj) {
   });
 }
 
+let lastWin = {};
+
 async function attempt() {
   const list = await ociRequest('GET', IAAS,
     `/20160918/instances?compartmentId=${CFG.tenancy}&displayName=${encodeURIComponent(CFG.displayName)}`);
@@ -70,6 +72,7 @@ async function attempt() {
     const live = JSON.parse(list.body).filter(i => !['TERMINATED', 'TERMINATING'].includes(i.lifecycleState));
     if (live.length > 0) {
       console.log(`Instance "${CFG.displayName}" already exists (${live[0].lifecycleState}). Nothing to do.`);
+      lastWin = { ocid: live[0].id, state: live[0].lifecycleState, shape: live[0].shapeConfig };
       return 'exists';
     }
   } else {
@@ -96,6 +99,7 @@ async function attempt() {
     console.log('============================================================');
     console.log('  SUCCESS — INSTANCE CREATED! 🎉');
     console.log('  OCID: ' + inst.id);
+    lastWin = { ocid: inst.id, state: inst.lifecycleState, shape: inst.shapeConfig };
     console.log('  Check the OCI console for the public IP. Then DISABLE this workflow.');
     console.log('============================================================');
     return 'created';
@@ -134,9 +138,11 @@ async function attempt() {
       outcome = 'nocap';
     }
 
-    if (outcome === 'created') { try { fs.writeFileSync(WON_FILE, new Date().toISOString()); } catch (e) {} process.exit(1); }
+    if (outcome === 'created' || outcome === 'exists') {
+      try { fs.writeFileSync(WON_FILE, JSON.stringify({ ...lastWin, outcome, when: new Date().toISOString() }, null, 2)); } catch (e) {}
+      process.exit(outcome === 'created' ? 1 : 0);
+    }
     if (outcome === 'error') process.exit(1);
-    if (outcome === 'exists') { try { fs.writeFileSync(WON_FILE, new Date().toISOString()); } catch (e) {} process.exit(0); }
 
     const wait = outcome === 'ratelimit' ? RETRY_INTERVAL_MS * 3 : RETRY_INTERVAL_MS;
     if (Date.now() + wait >= deadline) {

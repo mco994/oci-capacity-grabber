@@ -2,26 +2,108 @@ name: grab-arm-capacity
 
 on:
   schedule:
-    - cron: '*/5 * * * *'    # every 5 min (public repo = unlimited minutes); GitHub may delay under load
-  workflow_dispatch: {}        # manual "Run workflow" button
+    - cron: '*/5 * * * *'    # GitHub etale les crons sous charge : la boucle interne de launch.js compense
+  workflow_dispatch:
+    inputs:
+      test_notify:
+        description: "Envoyer une notification de TEST sans toucher a OCI"
+        type: boolean
+        default: false
 
-# Avoid overlapping runs piling up.
 concurrency:
   group: grab
   cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  actions: write
 
 jobs:
   grab:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+
+      # --- Chemin de test : verifie que la notification arrive vraiment, sans appeler OCI ---
+      - name: Notification de test
+        if: ${{ github.event.inputs.test_notify == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          cat > body.md <<'EOF'
+          @mco994 ceci est un **test** declenche a la main : aucune VM n'a ete creee.
+
+          Si tu recois ce message par mail, le canal d'alerte fonctionne. Le jour ou la
+          capacite s'ouvre, tu recevras le meme type de ticket, titre **VM OBTENUE**.
+
+          Tu peux fermer ce ticket.
+          EOF
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "TEST - la notification de capture fonctionne" \
+            --assignee mco994 --body-file body.md
+          if [ -n "$NTFY_TOPIC" ]; then
+            curl -s -H "Title: VM Oracle - test" -d "Test de notification, aucune VM creee." "https://ntfy.sh/$NTFY_TOPIC" > /dev/null
+            echo "Push ntfy envoye."
+          else
+            echo "Pas de secret NTFY_TOPIC : canal push non configure, le ticket GitHub suffit."
+          fi
+
+      - uses: actions/setup-node@v5
+        if: ${{ github.event.inputs.test_notify != 'true' }}
         with:
-          node-version: '20'
-      - name: Write OCI private key from secret
+          node-version: '22'
+
+      - name: Ecrire la cle privee OCI depuis le secret
+        if: ${{ github.event.inputs.test_notify != 'true' }}
         env:
           KEY: ${{ secrets.OCI_API_PRIVATE_KEY }}
         run: printf '%s' "$KEY" > oci_api_key.pem
-      - name: Attempt to grab capacity
+
+      - name: Tenter d'attraper la capacite
+        if: ${{ github.event.inputs.test_notify != 'true' }}
+        continue-on-error: true
+        env:
+          WON_FILE: won.json
         run: node launch.js
+
+      # --- Notification reelle : declenchee par le fichier temoin, pas par le code de sortie ---
+      - name: Prevenir que la VM est obtenue
+        if: ${{ github.event.inputs.test_notify != 'true' && hashFiles('won.json') != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          {
+            echo "@mco994 la capacite s'est ouverte : l'instance **claude-dev** a ete creee"
+            echo "sur le disque conserve (2 OCPU / 12 Go)."
+            echo
+            echo '```json'
+            cat won.json
+            echo '```'
+            echo
+            echo "A faire :"
+            echo "1. Recuperer l'adresse IP publique (console OCI ou API)."
+            echo "2. Verifier que Tailscale remonte - la cle du noeud peut avoir expire apres six mois."
+            echo "3. Verifier que la session \`tmux dev\` a ete recreee par le cron \`@reboot\`."
+            echo "4. Tester \`vm\` depuis PC1, PC3 et le telephone."
+            echo
+            echo "Le workflow de capture vient d'etre desactive automatiquement."
+            echo "Run : $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > body.md
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "VM OBTENUE - claude-dev tourne (2 OCPU / 12 Go)" \
+            --assignee mco994 --body-file body.md
+          if [ -n "$NTFY_TOPIC" ]; then
+            curl -s -H "Title: VM OBTENUE" -H "Priority: high" -d "claude-dev tourne (2 OCPU / 12 Go). Voir le ticket GitHub." "https://ntfy.sh/$NTFY_TOPIC" > /dev/null
+          fi
+          gh workflow disable grab-arm-capacity --repo "$GITHUB_REPOSITORY" || true
+
+      # --- Second signal : marquer le run en echec pour declencher aussi le mail Actions ---
+      - name: Marquer le run comme gagnant
+        if: ${{ github.event.inputs.test_notify != 'true' && hashFiles('won.json') != '' }}
+        run: |
+          echo "::error::VM OBTENUE - un ticket GitHub vient d'etre ouvert. Cet echec est volontaire."
+          exit 1

@@ -10,9 +10,13 @@ const CFG = {
   availabilityDomain: 'QqsV:EU-MARSEILLE-1-AD-1',
   subnetId:     'ocid1.subnet.oc1.eu-marseille-1.aaaaaaaaxi2kvzkpacr2534cr7jqazameuies2dojhhhugeuntwizqig7aya',
   imageId:      'ocid1.image.oc1.eu-marseille-1.aaaaaaaafma24hdplplovw2mtxxpge5q5gwxilt5go3nbjefvsn4dd2scq7q',
+  // Disque de l'ancienne claude-dev, conserve a la terminaison : tout l'environnement
+  // (Ubuntu, node, Claude Code, tmux, Tailscale, repos, cles des 3 appareils) est dessus.
+  bootVolumeId: 'ocid1.bootvolume.oc1.eu-marseille-1.abwxeljren4bqusfcpumkf4pxzwqm3iyzcahpzcdm4qqhvugle7kae2dxx6a',
   shape:        'VM.Standard.A1.Flex',
-  ocpus:        4,
-  memoryInGBs:  24,
+  // Plafond du compte mesure le 2026-09-23 : standard-a1-core-count = 2, memory-count = 12.
+  ocpus:        2,
+  memoryInGBs:  12,
   bootVolumeSizeInGBs: 150,
   displayName:  'claude-dev',
   sshPublicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE72Q+wrL9iEinFF0MBH7HzFTDwtXpQDBqLvXGGmABLr pc1-marin-oracle',
@@ -79,7 +83,9 @@ async function attempt() {
     displayName: CFG.displayName,
     shape: CFG.shape,
     shapeConfig: { ocpus: CFG.ocpus, memoryInGBs: CFG.memoryInGBs },
-    sourceDetails: { sourceType: 'image', imageId: CFG.imageId, bootVolumeSizeInGBs: CFG.bootVolumeSizeInGBs },
+    sourceDetails: CFG.bootVolumeId
+      ? { sourceType: 'bootVolume', bootVolumeId: CFG.bootVolumeId }
+      : { sourceType: 'image', imageId: CFG.imageId, bootVolumeSizeInGBs: CFG.bootVolumeSizeInGBs },
     createVnicDetails: { subnetId: CFG.subnetId, assignPublicIp: true },
     metadata: { ssh_authorized_keys: CFG.sshPublicKey },
   };
@@ -98,6 +104,12 @@ async function attempt() {
   if (res.status === 429) {
     console.log(`Rate-limited (HTTP 429). Backing off.`);
     return 'ratelimit';
+  }
+
+  if (/service limits were exceeded/i.test(res.body)) {
+    console.error(`Quota A1 depasse — la taille demandee (${CFG.ocpus} OCPU / ${CFG.memoryInGBs} Go) sort du plafond du compte.`);
+    console.error(res.body.slice(0, 300));
+    return 'error';
   }
 
   if (/capacity/i.test(res.body)) {
